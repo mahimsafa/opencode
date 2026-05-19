@@ -201,6 +201,7 @@ export type TuiPromptRef = {
   blur(): void
   focus(): void
   submit(): void
+  voiceToggle?: () => void
 }
 
 export type TuiPromptProps = {

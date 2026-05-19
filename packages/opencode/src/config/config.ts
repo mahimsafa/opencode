@@ -40,6 +40,7 @@ import { ConfigReference } from "./reference"
 import { ConfigServer } from "./server"
 import { ConfigSkills } from "./skills"
 import { ConfigVariable } from "./variable"
+import { ConfigVoice } from "./voice"
 import { Npm } from "@opencode-ai/core/npm"
 
 const log = Log.create({ service: "config" })
@@ -232,6 +233,9 @@ export const Info = Schema.Struct({
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   attachment: Schema.optional(ConfigAttachment.Info).annotate({
     description: "Attachment processing configuration, including image size limits and resizing behavior",
+  }),
+  voice: Schema.optional(ConfigVoice.Info).annotate({
+    description: "Voice input configuration for local speech-to-text in the TUI",
   }),
   enterprise: Schema.optional(
     Schema.Struct({

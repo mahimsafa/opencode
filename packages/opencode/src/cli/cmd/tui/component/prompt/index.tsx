@@ -62,6 +62,8 @@ import { type WorkspaceStatus } from "../workspace-label"
 import { useCommandPalette } from "../../context/command-palette"
 import { useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../context/tui-config"
+import { VoiceController } from "@/voice/controller"
+import type { Info as OpencodeConfig } from "@/config/config"
 
 export type PromptProps = {
   sessionID?: string
@@ -87,6 +89,7 @@ export type PromptRef = {
   blur(): void
   focus(): void
   submit(): void
+  voiceToggle?(): void
 }
 
 const money = new Intl.NumberFormat("en-US", {
@@ -161,6 +164,11 @@ export function Prompt(props: PromptProps) {
   const { theme, syntax } = useTheme()
   const kv = useKV()
   const animationsEnabled = createMemo(() => kv.get("animations_enabled", true))
+  const voiceConfig = createMemo(() => (sync.data.config as OpencodeConfig).voice)
+  const voiceEnabled = createMemo(() => voiceConfig()?.enabled !== false)
+  const [voiceState, setVoiceState] = createSignal<VoiceController.State>("idle")
+  const [voiceElapsed, setVoiceElapsed] = createSignal(0)
+  let voiceCtrl: ReturnType<typeof VoiceController.create> | undefined
   const list = createMemo(() => props.placeholders?.normal ?? [])
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
@@ -309,6 +317,57 @@ export function Prompt(props: PromptProps) {
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
   let promptPartTypeId = 0
   const event = useEvent()
+
+  function insertVoiceText(text: string) {
+    if (!input || input.isDestroyed) return
+    const current = input.plainText
+    const next = current.trim() ? `${current}\n\n${text}` : text
+    input.setText(next)
+    setStore("prompt", "input", next)
+    input.gotoBufferEnd()
+    setCursorVersion((value) => value + 1)
+  }
+
+  onMount(() => {
+    const cfg = voiceConfig()
+    voiceCtrl = VoiceController.create({
+      enabled: cfg?.enabled !== false,
+      model: cfg?.model ?? "base",
+      language: cfg?.language,
+      cli: cfg?.cli,
+      model_path: cfg?.model_path,
+    })
+    return voiceCtrl.subscribe((event) => {
+      if (event.type === "state") {
+        setVoiceState(event.state)
+        if (event.state === "recording") setVoiceElapsed(0)
+        renderer.requestRender()
+      }
+      if (event.type === "transcription") insertVoiceText(event.text)
+      if (event.type === "error") {
+        toast.show({
+          variant: "error",
+          message: event.message,
+          duration: 5000,
+        })
+      }
+    })
+  })
+
+  onCleanup(() => {
+    voiceCtrl?.cancel()
+  })
+
+  createEffect(() => {
+    if (voiceState() !== "recording") return
+    const timer = setInterval(() => {
+      const started = voiceCtrl?.startedAt
+      if (!started) return
+      setVoiceElapsed(Math.floor((Date.now() - started) / 1000))
+      renderer.requestRender()
+    }, 1000)
+    onCleanup(() => clearInterval(timer))
+  })
 
   event.on(TuiEvent.PromptAppend.type, (evt) => {
     if (!input || input.isDestroyed) return
@@ -673,6 +732,9 @@ export function Prompt(props: PromptProps) {
     submit() {
       void submit()
     },
+    voiceToggle() {
+      void voiceCtrl?.toggle()
+    },
   }
 
   onMount(() => {
@@ -858,6 +920,32 @@ export function Prompt(props: PromptProps) {
 
   useBindings(() => ({
     commands: stashCommands(),
+  }))
+
+  useBindings(() => ({
+    target: inputTarget,
+    priority: 100,
+    enabled: () => voiceEnabled() && !props.disabled && inputTarget() !== undefined,
+    commands: [
+      {
+        name: "voice.toggle",
+        title: "Toggle voice recording",
+        category: "Prompt",
+        slashName: "voice",
+        run() {
+          void voiceCtrl?.toggle()
+        },
+      },
+    ],
+    bindings: [
+      {
+        key: "ctrl+shift+r",
+        desc: "Toggle voice recording",
+        group: "Prompt",
+        cmd: "voice.toggle",
+        preventDefault: true,
+      },
+    ],
   }))
 
   useBindings(() => {
@@ -1385,6 +1473,7 @@ export function Prompt(props: PromptProps) {
   }
 
   const highlight = createMemo(() => {
+    if (voiceState() === "recording") return theme.error
     if (leader()) return theme.border
     if (store.mode === "shell") return theme.primary
     const agent = local.agent.current()
@@ -1471,6 +1560,13 @@ export function Prompt(props: PromptProps) {
       }),
     }
   })
+
+  const voiceSpinner = createMemo(() =>
+    createFrames({
+      color: theme.error,
+      style: "blocks",
+    }),
+  )
 
   return (
     <>
@@ -1562,6 +1658,12 @@ export function Prompt(props: PromptProps) {
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
+                <Show when={voiceState() === "recording"}>
+                  <text fg={theme.error}>● REC</text>
+                </Show>
+                <Show when={voiceState() === "transcribing"}>
+                  <text fg={theme.textMuted}>…</text>
+                </Show>
                 <Show when={local.agent.current()} fallback={<box height={1} />}>
                   {(agent) => (
                     <>
@@ -1628,6 +1730,18 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Switch>
+            <Match when={voiceState() === "recording" || voiceState() === "transcribing"}>
+              <box paddingLeft={3} flexDirection="row" gap={1} flexGrow={1}>
+                <Show when={voiceState() === "recording" && kv.get("animations_enabled", true)}>
+                  <spinner color={theme.error} frames={voiceSpinner()} interval={80} />
+                </Show>
+                <text fg={voiceState() === "recording" ? theme.error : theme.textMuted}>
+                  {voiceState() === "recording"
+                    ? `Recording ${formatDuration(voiceElapsed())} · ctrl+shift+r to stop`
+                    : `Transcribing... · ctrl+shift+r to cancel`}
+                </text>
+              </box>
+            </Match>
             <Match when={status().type !== "idle"}>
               <box
                 flexDirection="row"

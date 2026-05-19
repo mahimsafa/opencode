@@ -559,6 +559,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       },
       {
+        name: "voice.toggle",
+        title: "Toggle voice recording",
+        category: "Prompt",
+        slashName: "voice",
+        run: () => {
+          promptRef.current?.voiceToggle?.()
+        },
+      },
+      {
         name: "agent.list",
         title: "Switch agent",
         category: "Agent",
